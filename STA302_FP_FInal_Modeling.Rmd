@@ -1,0 +1,554 @@
+---
+title: "STA302 Final Project Model"
+author: "Bryan Chen, Jack Lewandowski, Pio Sleiman"
+date: "2024-11-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Updated sampling
+
+```{r}
+# loading in the data set
+Uncleaned_Lendcl <- read.csv(file = "accepted_2007_to_2018Q4.csv")
+```
+
+```{r}
+# Calculating the proportion of missing values for each column
+na_proportion <- colSums(is.na(Uncleaned_Lendcl) / nrow(Uncleaned_Lendcl))
+
+# clearly setting a threshold of the proportion of missing observations in each column
+na_threshold <- 0.3
+
+Uncleaned_Lendcl$emp_length_numeric <- as.numeric(gsub("[^0-9]", "", Uncleaned_Lendcl$emp_length))
+
+# using the threshold and filtering the data accordingly
+Filtered_Data <- Uncleaned_Lendcl[, na_proportion <= na_threshold]
+
+# omitting observations with missing values for any of the remaining variables
+Final_Data <- na.omit(Filtered_Data)
+
+dim_final <- dim(Final_Data)
+dim_final
+```
+
+```{r}
+# STRATIFIED SAMPLING
+# One of the main focuses of this analysis is the role of location, so to ensure no sampling bias
+# I will implement a Stratified Sampling method, where I group by the state
+# using 0.012 as the sampling fraction because there are 1.8m obs and we want approximately 20k obs
+Sampled_Data <- Final_Data %>% group_by(addr_state) %>% sample_frac(0.012)
+
+# NOTE: I did not set a seed for the random sampling since the data set will be downloaded and used in another Rmd file for the preliminary analysis
+```
+
+The data has now been filtered and sampled. However, it is not yet completely ready for use as some categorical variables must be accompanied by equivalent dummy variables
+
+```{r}
+# Taking a more in-depth look at each column to determine if any additional work is needed before it is fit for use.
+summary(Sampled_Data)
+```
+
+```{r}
+# Removing the word "months" from the term column and converting it to a numeric format
+Sampled_Data$term <- as.numeric(gsub(" months", '', Sampled_Data$term))
+```
+
+```{r}
+# Creating dummy variables based on home_ownership
+# First, remove all observations without the main three categories
+Sampled_Data <- Sampled_Data %>% 
+  filter(home_ownership %in% c("OWN", "MORTGAGE", "RENT"))
+# Create the dummies
+library(fastDummies)
+Sampled_Data <- dummy_cols(Sampled_Data, select_columns = "home_ownership", remove_first_dummy = FALSE)
+```
+
+```{r}
+# Creating a new column to generalize state locations
+# First, we have to attribute every state to certain region
+state_to_region <- c(
+  'CA' = 'West', 'OR' = 'West', 'UT' = 'West', 'WA' = 'West', 'CO' = 'West',
+  'NV' = 'West', 'AK' = 'West', 'MT' = 'West', 'HI' = 'West', 'WY' = 'West', 'ID' = 'West',
+  'AZ' = 'SouthWest', 'TX' = 'SouthWest', 'NM' = 'SouthWest', 'OK' = 'SouthWest',
+  'GA' = 'SouthEast', 'NC' = 'SouthEast', 'VA' = 'SouthEast', 'FL' = 'SouthEast', 'KY' = 'SouthEast',
+  'SC' = 'SouthEast', 'LA' = 'SouthEast', 'AL' = 'SouthEast', 'WV' = 'SouthEast', 'DC' = 'SouthEast',
+  'AR' = 'SouthEast', 'DE' = 'SouthEast', 'MS' = 'SouthEast', 'TN' = 'SouthEast',
+  'IL' = 'MidWest', 'MO' = 'MidWest', 'MN' = 'MidWest', 'OH' = 'MidWest', 'WI' = 'MidWest',
+  'KS' = 'MidWest', 'MI' = 'MidWest', 'SD' = 'MidWest', 'IA' = 'MidWest', 'NE' = 'MidWest',
+  'IN' = 'MidWest', 'ND' = 'MidWest',
+  'CT' = 'NorthEast', 'NY' = 'NorthEast', 'PA' = 'NorthEast', 'NJ' = 'NorthEast', 'RI' = 'NorthEast',
+  'MA' = 'NorthEast', 'MD' = 'NorthEast', 'VT' = 'NorthEast', 'NH' = 'NorthEast', 'ME' = 'NorthEast')
+
+# Adding the new column into the data set
+Sampled_Data <- Sampled_Data %>%
+  mutate(region = state_to_region[addr_state])
+```
+
+```{r}
+# Create a new column for the average fico score
+Sampled_Data <- Sampled_Data %>% 
+  mutate(fico_avg = (fico_range_high + fico_range_low) / 2)
+```
+
+```{r}
+# Downloading the data set
+
+write.csv(Sampled_Data, "UpdatedCleaned_LendingClub.csv", row.names = FALSE)
+```
+
+# Initial Modeling
+
+```{r}
+library(dplyr)
+library(tidyverse)
+
+# Loading in updated cleaned dataset
+sample_data <- read.csv("UpdatedCleaned_LendingClub.csv")
+
+sample_data <- sample_data %>%
+  mutate(
+    home_ownership = as.factor(home_ownership),
+    region = as.factor(region)
+  )
+```
+
+```{r}
+head(sample_data)
+```
+
+```{r}
+# Fit our initial full model
+
+# Pool of variables
+model_data <- sample_data %>% 
+  dplyr::select(funded_amnt, dti, fico_avg, home_ownership, region, int_rate, annual_inc, pub_rec_bankruptcies, grade, emp_length, pub_rec, pymnt_plan, total_il_high_credit_limit, application_type)
+
+model_data <- model_data %>%
+  mutate(
+    home_ownership = as.factor(home_ownership),
+    region = as.factor(region),
+    pymnt_plan = as.factor(pymnt_plan),
+    application_type = as.factor(application_type),
+    bankruptcy_dummy = ifelse(pub_rec_bankruptcies > 0, 1, 0)
+  )
+```
+
+```{r}
+library(MASS)
+library(leaps)
+
+stepAIC(lm(funded_amnt ~ ., data = model_data),
+        scope=list(lower=lm(funded_amnt ~ 1, data = model_data)),
+        direction = "backward", k = 2)
+```
+
+```{r}
+library(MASS)
+library(leaps)
+
+stepAIC(lm(funded_amnt ~ 1, data=model_data),
+           scope = list(upper=lm(funded_amnt ~ ., data = model_data)),
+           direction = "forward", k = 2)
+```
+
+
+```{r}
+# Fitting the initial model recommended above
+model1 <- lm(funded_amnt ~ dti + region + emp_length + fico_avg + home_ownership + annual_inc + pub_rec_bankruptcies + grade + 
+    total_il_high_credit_limit + application_type, data = model_data)
+
+summary(model1)
+```
+
+## Checking our Assumptions
+
+```{r}
+# extract our fitted and residual values
+y_hat <- fitted(model1)
+e_hat <- resid(model1)
+
+# plot our residuals vs. predicted values
+plot(y_hat, e_hat, main = "Residuals vs Fitted", ylab = "Residuals", xlab = "Fitted")
+
+# List of predictors used in the model
+predictors <- c("dti", "fico_avg", "home_ownership", "region", "emp_length",
+                "annual_inc", "pub_rec_bankruptcies", "grade", "total_il_high_credit_limit", "application_type")
+
+# par(mar=c(1,1,1,1))
+
+
+# Plot fitted vs predictor values
+# par(mfrow = c(5, 2))
+
+for (predictor in predictors) {
+  predictor_values <- model_data[[predictor]]
+  test2 <- model_data[["dti"]]
+  
+  # Handle factors or character columns differently
+  if (is.factor(predictor_values) || is.character(predictor_values)) {
+    boxplot(e_hat ~ predictor_values, main = predictor, 
+            xlab = predictor, ylab = "Residuals", col = "lightblue")
+  } else {
+    plot(predictor_values, e_hat, main = predictor,
+         xlab = predictor, ylab = "Residuals", pch = 19, col = "blue")
+    abline(h = mean(e_hat), col = "red", lty = 2)  # Reference line
+  }
+}
+
+qqnorm(e_hat)
+qqline(e_hat)
+
+```
+```{r}
+# Check conditional mean response (scatterplot of response versus fitted values)
+plot(x = y_hat, y = model_data$funded_amnt, main="Funded_amnt vs Fitted", xlab = "Fitted", ylab = "Price", xlim = c(0,50000))
+abline(a = 0, b = 1, lty=2)
+```
+
+```{r}
+# Check conditional mean predictors (all pairwise scatterplots of predictors)
+model_coef_only <- model_data %>% dplyr::select(funded_amnt, dti, fico_avg,  
+    annual_inc, pub_rec_bankruptcies, 
+    total_il_high_credit_limit)
+
+pairs(model_coef_only[,2:6])
+
+title(main = 'Pairwise Scatterplots of Predictors', line = 3)
+```
+
+```{r}
+# Generating the plots/figures that will be used in the report and poster
+library(ggplot2)
+
+ggplot(data = model_data, aes(x = annual_inc, y = e_hat)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  scale_x_continuous(limits = c(0, 4e+06), labels = scales::comma) +
+  scale_y_continuous(limits = c(-50000, NA)) +
+  labs(
+    title = "Residuals vs Annual Income",
+    x = "Annual Income",
+    y = "Residuals"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+
+ggplot(data = model_data, aes(x = total_il_high_credit_limit, y = e_hat)) +
+  geom_point(color = "green", alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red")+
+  scale_y_continuous(limits = c(-50000, NA)) +
+  labs(
+    title = "Residuals vs High Credit Limit",
+    x = "High Credit Limit",
+    y = "Residuals"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+
+ggplot(data = model_data, aes(x = y_hat, y = e_hat)) +
+  geom_point(color = "purple", alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  scale_x_continuous(limits = c(0, 50000)) +
+  scale_y_continuous(limits = c(-50000, NA)) +
+  labs(
+    title = "Residuals vs Fitted Values",
+    x = "Fitted Values",
+    y = "Residuals"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+
+```
+
+```{r}
+library(car)
+vif(model1)
+```
+## BoxCox Transformations
+```{r}
+library(car)
+
+model_data <- model_data %>% filter(dti != 0)
+
+model_data$total_il_high_credit_limit <- model_data$total_il_high_credit_limit + 1
+
+numeric_vars <- model_data %>%
+  dplyr::select(dti,annual_inc, total_il_high_credit_limit) #No fico_avg since we concluded that there is no need to tranform it
+
+p <- powerTransform(cbind(numeric_vars)) 
+summary(p)
+```
+
+```{r}
+model_data$boxdti <- model_data$dti ^ 0.45
+model_data$boxannual_inc <- log(model_data$annual_inc)
+model_data$boxtotal_il_high_credit_limit <- model_data$total_il_high_credit_limit ^ 0.33
+```
+
+### Model
+
+```{r}
+boxmodel <- lm(funded_amnt ~ boxdti + fico_avg + home_ownership + region + boxannual_inc + pub_rec_bankruptcies + grade + emp_length + 
+    boxtotal_il_high_credit_limit + application_type, data = model_data)
+summary(boxmodel)
+
+# filtering for thresholds
+filtered_data <- model_data %>% filter(
+  fico_avg < 770 + (grade %in% c('A', 'B', 'C', 'D')) + (boxtotal_il_high_credit_limit > 500)
+)
+
+boxmodelf <- lm(funded_amnt ~ boxdti + fico_avg + home_ownership + region + boxannual_inc + pub_rec_bankruptcies + grade + emp_length + boxtotal_il_high_credit_limit + application_type, data = filtered_data)
+```
+
+```{r}
+# extract our fitted and residual values
+y_hat <- fitted(boxmodel)
+e_hat <- resid(boxmodel)
+
+# plot our residuals vs. predicted values
+plot(y_hat, e_hat, main = "Residuals vs Fitted", ylab = "Residuals", xlab = "Fitted")
+
+# List of predictors used in the model
+predictors <- c("boxdti", "fico_avg", "home_ownership", "region", 
+                "boxannual_inc", "pub_rec_bankruptcies", "grade", 
+                "emp_length", "boxtotal_il_high_credit_limit", "application_type")
+
+# par(mar=c(1,1,1,1))
+
+# Plot fitted vs predictor values
+# par(mfrow = c(5, 2))
+
+for (predictor in predictors) {
+  predictor_values <- model_data[[predictor]]
+  print(length(e_hat))
+  print(length(predictor_values))
+  
+  # Handle factors or character columns differently
+  if (is.factor(predictor_values) || is.character(predictor_values)) {
+    boxplot(e_hat ~ predictor_values, main = predictor, 
+            xlab = predictor, ylab = "Residuals", col = "lightblue", cex = 0.5)
+  } else {
+    plot(predictor_values, e_hat, main = predictor,
+         xlab = predictor, ylab = "Residuals", pch = 19, col = "blue", cex = 0.5)
+    abline(h = mean(e_hat), col = "red", lty = 2)  # Reference line
+  }
+}
+
+qqnorm(e_hat)
+qqline(e_hat)
+```
+
+## Checking additional conditions for MLR
+
+```{r}
+# Check conditional mean response (scatterplot of response versus fitted values)
+plot(x = y_hat, y = model_data$sqrtfunded_amnt, main="Funded_amnt vs Fitted", xlab = "Fitted", ylab = "Price")
+abline(a = 0, b = 1, lty=2)
+```
+
+```{r}
+# Check conditional mean predictors (all pairwise scatterplots of predictors)
+model_coef_only <- model_data %>% dplyr::select(funded_amnt, boxdti, fico_avg,  
+    boxannual_inc, pub_rec_bankruptcies, 
+    boxtotal_il_high_credit_limit)
+
+pairs(model_coef_only[,2:6])
+
+title(main = 'Pairwise Scatterplots of Predictors', line = 3)
+```
+
+```{r}
+# Generating the plots/figures that will be used in the report and poster
+library(ggplot2)
+
+ggplot(data = model_data, aes(x = boxannual_inc, y = e_hat)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Residuals vs Annual Income",
+    x = "Annual Income",
+    y = "Residuals"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+
+ggplot(data = model_data, aes(x = fico_avg, y = e_hat)) +
+  geom_point(color = "green", alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red")+
+  labs(
+    title = "Residuals vs High Credit Limit",
+    x = "Average FICO Score",
+    y = "Residuals"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+
+ggplot(data = model_data, aes(x = y_hat, y = e_hat)) +
+  geom_point(color = "purple", alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Residuals vs Fitted Values",
+    x = "Fitted Values",
+    y = "Residuals"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+
+```
+
+
+```{r}
+# Getting tables to use in report
+library(stargazer)
+names(boxmodel$coefficients) <- gsub("emp_length10\\+ years", "emp_length10plus years", names(boxmodel$coefficients))
+
+# Generating the tables that will be used in the report
+stargazer(boxmodel,
+          type = 'html',
+          out = 'Part1.html',
+          dep.var.labels = c("Funded Amount"),
+          digits = 3,
+          covariate.labels = c('DTI', 'Average FICO Score', 'Home Ownership (Own)', 'Home Ownership (Rent)',
+                               'Region (North East)', 'Region (South East)', 
+                               'Region (South West)', 'Region (West)', 'Annual Income'),
+          omit = c('gradeB','gradeC', 'gradeD', 'gradeE', 'gradeF', 'gradeG',
+                   'emp_length1 year', 'emp_length10plus years', 'emp_length2 years',
+                   'emp_length3 years', 'emp_length4 years', 'emp_length5 years',
+                   'emp_length6 years', 'emp_length7 years', 'emp_length8 years',
+                   'emp_length9 years', 'boxtotal_il_high_credit_limit',
+                   'application_typeJoint App', 'pub_rec_bankruptcies')
+)
+
+
+stargazer(boxmodel,
+          type = 'html',
+          out = 'Part2.html',
+          dep.var.labels = c("Funded Amount"),
+          digits = 3,
+          covariate.labels = c('Grade B','Grade C', 'Grade D', 'Grade E', 
+                               'Grade F', 'Grade G', 'Emp Length (1 Year)', 'Emp Length (10+ Years)',
+                               'Emp Length (2 Years)'),
+          omit = c('boxdti', 'fico_avg', 'boxannual_inc',
+                   'home_ownershipOWN','home_ownershipRENT', 'regionNorthEast', 'regionSouthEast', 'regionSouthWest', 'regionWest','emp_length3 years',
+                   'emp_length4 years', 'emp_length5 years','emp_length6 years', 'emp_length7 years', 'emp_length8 years',
+                   'emp_length9 years', 'boxtotal_il_high_credit_limit',
+                   'application_typeJoint App', 'pub_rec_bankruptcies')
+)
+
+stargazer(boxmodel,
+          type = 'html',
+          out = 'Part3.html',
+          dep.var.labels = c("Funded Amount"),
+          digits = 3,
+          covariate.labels = c('Pub Rec Bankruptcies','Emp Length (3 Years)','Emp Length (4 Years)','Emp Length (5 Years)','Emp Length (6 Years)', 'Emp Length (7 Years)',
+                               'Emp Length (8 Years)', 'Emp Length (9 Years)', 'High Credit Limit', 'Application Type (Joint App)'),
+          omit = c('boxdti', 'fico_avg', 'boxannual_inc',
+                   'home_ownershipOWN','home_ownershipRENT', 'regionNorthEast', 'regionSouthEast', 'regionSouthWest', 'regionWest',
+                   'gradeB','gradeC', 'gradeD', 'gradeE', 'gradeF', 'gradeG',
+                   'emp_length1 year', 'emp_length10plus years', 'emp_length2 years')
+)
+```
+
+```{r}
+library(stargazer)
+stargazer(boxmodel,
+          type = 'html',
+          out = 'Report.html',
+          dep.var.labels = c("Funded Amount"),
+          digits = 3,
+          covariate.labels = c('Average FICO Score', 'Region (North East)',
+                               'Region (South East)', 'Region (South West)',
+                               'Region (West)', 'ln(Annual Income)'),
+          omit = c('boxdti', 'home_ownershipOWN', 'home_ownershipRENT',
+                   'gradeB','gradeC', 'gradeD', 'gradeE', 'gradeF', 'gradeG',
+                   'emp_length1 year', 'emp_length10plus years', 'emp_length2 years', 'emp_length3 years',
+                   'emp_length4 years', 'emp_length5 years','emp_length6 years', 'emp_length7 years', 'emp_length8 years',
+                   'emp_length9 years', 'boxtotal_il_high_credit_limit',
+                   'application_typeJoint App', 'pub_rec_bankruptcies'))
+```
+## Goodness of Model
+```{r}
+# Check model outputs
+# What is the conclusion of the ANOVA overall test of significance for this model?
+summary(boxmodel)
+
+# Assess multicollinearity
+vif(boxmodel)
+```
+
+
+## Addressing problematic observations
+```{r}
+# Load necessary library
+library(car)
+
+# Model diagnostics
+n <- nobs(model1)
+p <- ncol(model.matrix(model1)) - 1
+
+# Define cutoffs
+cutoff_hii <- 2 * ((p + 1) / n)  # Leverage cutoff
+cutoff_di <- qf(0.5, p + 1, n - p - 1)  # Cook's distance cutoff
+cutoff_dffits <- 2 * sqrt((p + 1) / n)  # DFFITS cutoff
+cutoff_dfbetas <- 2 / sqrt(n)  # DFBETAS cutoff
+
+# Calculate diagnostics
+hii <- hatvalues(model1)  # Leverage
+ri <- rstandard(model1)  # Standardized residuals
+di <- cooks.distance(model1)  # Cook's distance
+dffits <- dffits(model1)  # DFFITS
+dfbetas <- dfbetas(model1)  # DFBETAS
+
+# Identify problematic observations
+leverage_points <- which(hii > cutoff_hii)
+outliers <- which(ri > 4 | ri < -4)
+influential_cooks <- which(di > cutoff_di)
+influential_dffits <- which(abs(dffits) > cutoff_dffits)
+
+# Identify influential observations by DFBETAS
+influential_dfbetas <- list()
+for (i in 1:ncol(dfbetas)) {
+  influential_dfbetas[[paste0("Beta_", i-1)]] <- which(abs(dfbetas[, i]) > cutoff_dfbetas)
+}
+
+# Combine all diagnostics into a single dataframe
+diagnostics <- data.frame(
+  observation = 1:n,
+  leverage = hii > cutoff_hii,
+  standardized_residuals = ri > 4 | ri < -4,
+  cooks_distance = di > cutoff_di,
+  dffits = abs(dffits) > cutoff_dffits,
+  dfbetas = apply(abs(dfbetas), 1, function(x) any(x > cutoff_dfbetas))
+)
+
+# Filter problematic observations
+problematic <- diagnostics[rowSums(diagnostics[, -1]) > 0, ]
+
+summary(problematic)
+
+# Show all problematic observations in a dataframe
+cat("\nProblematic Observations Summary:\n")
+print(problematic)
+```
